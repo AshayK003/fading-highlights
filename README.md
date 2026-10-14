@@ -34,8 +34,8 @@ Open `fading-highlights.html` in any modern browser. That's it.
 
 ## Features
 
-- **PDF + paste ingestion** — Load a digital-text PDF or paste raw text (blank-line paragraph splitting). Scanned PDFs are detected and rejected with a clear message instead of silently producing garbage.
-- **Select-to-highlight with suggestion chips** — Drag to mark a passage, or accept auto-suggested key terms. Suggestions dedupe against existing highlights.
+- **PDF + paste ingestion** — Load a digital-text PDF or paste raw text, with smart paragraph rebuilding (hard-wrapped lines rejoin, sentence breaks split, list items and markdown headings stay standalone, hyphenated PDF line-wraps rejoin). Scanned PDFs are detected and rejected with a clear message instead of silently producing garbage.
+- **Select-to-highlight with suggestion chips** — Drag to mark a passage, or accept auto-suggested key terms. Suggestions dedupe against existing highlights. On touch devices the highlight lands straight from the selection, and every highlight creation gives you a 5-second window to undo a mis-tap.
 - **Retrievability model** — Every highlight carries a stability `S` and a current retrievability `R`, computed from time since last review: `R = (1 + 0.95·decay·t/S)^-0.6`. Passages fade visually as `R` drops toward the lapse threshold.
 - **Commit-before-reveal recall** — The masked passage never reveals until you commit to "I remember this." Overclaiming is tracked against actual performance as a **calibration gap** — the distance between what you think you know and what you do.
 - **Latency-graded stability** — Your grade is inferred from how fast you commit, not from buttons: fast commit → Good (S ×1.6), slow commit → Hard (S ×1.15), miss or timeout → lapse (S halves, review in ~1 day).
