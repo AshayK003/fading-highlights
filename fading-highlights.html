@@ -756,7 +756,7 @@
       border-color: var(--warning-rose);
     }
 
-    .delete-toast {
+    .undo-toast {
       position: fixed;
       bottom: 24px;
       left: 50%;
@@ -777,7 +777,7 @@
       z-index: 70;
       pointer-events: none;
     }
-    .delete-toast.visible {
+    .undo-toast.visible {
       opacity: 1;
       transform: translate(-50%, 0);
       pointer-events: auto;
@@ -1738,8 +1738,8 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
       let nextHlId = 100;
       let activeDocId = 0;
       let memoryFilter = 'all'; // 'all' | 'due' | 'fresh'
-      let lastDeleted = null; // pending undo slot: { hl, doc }
-      let deleteToastTimer = null;
+      let pendingUndo = null; // pending undo closure for the action toast
+      let toastTimer = null;
 
       // Initial Seed Document #0
       const initialSeedPassageParagraphs = [
@@ -2315,42 +2315,45 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         } else if (act === 'del') {
           doc.highlights = doc.highlights.filter(h => h.id !== hl.id);
           renderActiveDocument();
-          lastDeleted = { hl, doc };
-          showDeleteToast();
+          showToast('Highlight deleted', () => {
+            doc.highlights.push(hl);
+            renderActiveDocument();
+          });
         }
       }
 
-      // --- Delete Undo: single pending slot, 5s window, in-memory only ---
-      function showDeleteToast() {
-        const existing = document.getElementById('deleteToast');
+      // --- Action Undo: single pending slot, 5s window, in-memory only ---
+      function showToast(message, undoFn) {
+        const existing = document.getElementById('undoToast');
         if (existing) existing.remove();
-        clearTimeout(deleteToastTimer);
+        clearTimeout(toastTimer);
 
         const toast = document.createElement('div');
-        toast.id = 'deleteToast';
-        toast.className = 'delete-toast';
+        toast.id = 'undoToast';
+        toast.className = 'undo-toast';
         toast.setAttribute('role', 'status');
         toast.setAttribute('aria-live', 'polite');
-        toast.innerHTML = '<span>Highlight deleted</span><button type="button" class="toast-undo" id="toastUndoBtn">Undo</button>';
+        toast.innerHTML = '<span>' + message + '</span><button type="button" class="toast-undo" id="toastUndoBtn">Undo</button>';
         document.body.appendChild(toast);
-        document.getElementById('toastUndoBtn').addEventListener('click', undoDelete);
+        document.getElementById('toastUndoBtn').addEventListener('click', runUndo);
         void toast.offsetWidth; // force reflow so the transition runs
         toast.classList.add('visible');
 
-        deleteToastTimer = setTimeout(() => {
+        pendingUndo = undoFn;
+        toastTimer = setTimeout(() => {
           toast.remove();
-          lastDeleted = null;
+          pendingUndo = null;
         }, 5000);
       }
 
-      function undoDelete() {
-        clearTimeout(deleteToastTimer);
-        const toast = document.getElementById('deleteToast');
+      function runUndo() {
+        clearTimeout(toastTimer);
+        const toast = document.getElementById('undoToast');
         if (toast) toast.remove();
-        if (lastDeleted) {
-          lastDeleted.doc.highlights.push(lastDeleted.hl);
-          lastDeleted = null;
-          renderActiveDocument();
+        if (pendingUndo) {
+          const fn = pendingUndo;
+          pendingUndo = null;
+          fn();
         }
       }
 
@@ -2865,7 +2868,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         }
 
         const doc = getActiveDoc();
-        doc.highlights.push({
+        const newHl = {
           id: ++nextHlId,
           text: selectionText,
           paragraphId: paraId,
@@ -2876,7 +2879,8 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
           lastReviewedHoursAgo: 0,
           decayFactor: 0.22,
           claimedGot: false
-        });
+        };
+        doc.highlights.push(newHl);
 
         // Clear selection UI
         window.getSelection().removeAllRanges();
@@ -2885,6 +2889,12 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
 
         // Re-render
         renderActiveDocument();
+
+        // Undo window: a mis-highlight on touch is one tap away from gone
+        showToast('Highlight added', () => {
+          doc.highlights = doc.highlights.filter(h => h.id !== newHl.id);
+          renderActiveDocument();
+        });
       }
 
       // --- AUTO-SUGGEST HIGHLIGHTS HEURISTICS ---
