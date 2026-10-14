@@ -41,6 +41,7 @@ Open `fading-highlights.html` in any modern browser. That's it.
 - **Latency-graded stability** — Your grade is inferred from how fast you commit, not from buttons: fast commit → Good (S ×1.6), slow commit → Hard (S ×1.15), miss or timeout → lapse (S halves, review in ~1 day).
 - **Simulation clock** — Run at realtime or accelerate 1 day = 10 seconds to watch decay and lapse cycles play out.
 - **Memory map** — A compact panel of every highlight's live state: fresh, decaying, due, or lapsed.
+- **Per-highlight control** — From the memory map, act on any single highlight: **pin** it to stop fading, mark it **already known** to retire it from the rotation, **ask me again** to force it due now, or **delete** it with a 5-second undo. Overrides persist and freeze the highlight's decay clock until lifted.
 - **Persistence** — State (documents, highlights, calibration, active doc) survives refresh via `localStorage`. Corrupt or stale state degrades gracefully to a clean boot.
 - **Multi-document** — Independent documents with independent calibration and decay.
 - **XSS-safe rendering** — User-supplied text and highlight targets are escaped before any DOM insertion.

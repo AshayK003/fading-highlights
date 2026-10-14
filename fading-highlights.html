@@ -512,6 +512,19 @@
       filter: blur(1.2px);
     }
 
+    /* User override: Pinned (frozen, never fades, never due) */
+    .hl-pinned {
+      background-color: var(--accent-fresh);
+      color: #1C1917;
+      box-shadow: inset 0 -2px 0 var(--accent-review);
+    }
+
+    /* User override: Mastered (marked as known, out of the rotation) */
+    .hl-mastered {
+      background-color: var(--border);
+      color: var(--text-muted);
+    }
+
     /* Marker dot: amber 4px, pulses ONCE on entry, never continuously */
     .hl-review::after,
     .hl-lapsed::after {
@@ -702,6 +715,85 @@
     .memory-item.is-due {
       border-left: 3px solid var(--accent-review);
       background: var(--surface);
+    }
+
+    .mem-tag {
+      font-family: var(--font-sans);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+
+    .memory-actions {
+      display: flex;
+      gap: 4px;
+    }
+    .mem-act {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: color 0.15s ease, border-color 0.15s ease;
+    }
+    .mem-act:hover,
+    .mem-act.is-on {
+      color: var(--accent-review);
+      border-color: var(--accent-review);
+    }
+    .mem-del:hover {
+      color: var(--warning-rose);
+      border-color: var(--warning-rose);
+    }
+
+    .delete-toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translate(-50%, 12px);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      color: var(--text-muted);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      opacity: 0;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      z-index: 70;
+      pointer-events: none;
+    }
+    .delete-toast.visible {
+      opacity: 1;
+      transform: translate(-50%, 0);
+      pointer-events: auto;
+    }
+    .toast-undo {
+      background: none;
+      border: none;
+      padding: 0;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-review);
+      cursor: pointer;
+    }
+    .toast-undo:hover {
+      text-decoration: underline;
     }
 
     .memory-snippet {
@@ -1646,6 +1738,8 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
       let nextHlId = 100;
       let activeDocId = 0;
       let memoryFilter = 'all'; // 'all' | 'due' | 'fresh'
+      let lastDeleted = null; // pending undo slot: { hl, doc }
+      let deleteToastTimer = null;
 
       // Initial Seed Document #0
       const initialSeedPassageParagraphs = [
@@ -1890,16 +1984,20 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         return documents.find(d => d.id === activeDocId) || documents[0];
       }
 
-      // --- Helper: State classification per FSRS Retrievability ---
-      function getHighlightState(r) {
-        if (r > 0.95) return 'fresh';
-        if (r >= 0.85) return 'softening';
-        if (r >= 0.15) return 'review';
+      // --- Helper: State classification per FSRS Retrievability + user overrides ---
+      function getHighlightState(hl) {
+        if (hl.override === 'pinned') return 'pinned';
+        if (hl.override === 'mastered') return 'mastered';
+        if (hl.override === 'again') return 'review';
+        if (hl.R > 0.95) return 'fresh';
+        if (hl.R >= 0.85) return 'softening';
+        if (hl.R >= 0.15) return 'review';
         return 'lapsed';
       }
 
       function getDaysUntilDue(hl) {
-        if (hl.R <= 0.85) return 'Due';
+        if (hl.override === 'pinned' || hl.override === 'mastered') return 'Held';
+        if (hl.override === 'again' || hl.R <= 0.85) return 'Due';
         const remainingHours = Math.max(0, (hl.R - 0.85) * hl.S * 48);
         const days = (remainingHours / 24).toFixed(1);
         return `${days}d`;
@@ -1987,7 +2085,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
             // Sort occurrences by length desc to prevent substring clobbering
             const sortedHls = [...hlList].sort((a, b) => b.text.length - a.text.length);
             sortedHls.forEach(h => {
-              const state = getHighlightState(h.R);
+              const state = getHighlightState(h);
               const escapedTarget = escapeRegex(escapeHtml(h.text));
               // replace first un-highlighted match
               const regex = new RegExp(`(?<!data-id="[^"]*|id="[^"]*)(${escapedTarget})(?![^<]*>|[^<>]*<\/span>)`, 'i');
@@ -2019,7 +2117,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
             const hl = doc.highlights.find(h => h.id === id);
             if (!hl) return;
 
-            const state = getHighlightState(hl.R);
+            const state = getHighlightState(hl);
             if (state === 'lapsed') {
               // LAPSE ROUTING: Re-read mode variant
               openRereadMode(hl);
@@ -2068,7 +2166,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
 
         doc.highlights.forEach(hl => {
           const el = document.getElementById(`hl-${hl.id}`);
-          const state = getHighlightState(hl.R);
+          const state = getHighlightState(hl);
           if (state === 'review' || state === 'lapsed') {
             dueCount++;
           }
@@ -2102,12 +2200,22 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
 
       function renderMemoryMap() {
         const doc = getActiveDoc();
-        let items = [...doc.highlights].sort((a, b) => a.R - b.R);
+        let items = [...doc.highlights].sort((a, b) => {
+          if (a.override === 'again' && b.override !== 'again') return -1;
+          if (b.override === 'again' && a.override !== 'again') return 1;
+          return a.R - b.R;
+        });
 
         if (memoryFilter === 'due') {
-          items = items.filter(h => h.R < 0.85);
+          items = items.filter(h => {
+            const st = getHighlightState(h);
+            return st === 'review' || st === 'lapsed';
+          });
         } else if (memoryFilter === 'fresh') {
-          items = items.filter(h => h.R > 0.95);
+          items = items.filter(h => {
+            const st = getHighlightState(h);
+            return st === 'fresh' || st === 'pinned' || st === 'mastered';
+          });
         }
 
         memoryList.innerHTML = '';
@@ -2125,7 +2233,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         }
 
         items.forEach(hl => {
-          const state = getHighlightState(hl.R);
+          const state = getHighlightState(hl);
           const isDue = (state === 'review' || state === 'lapsed');
           const li = document.createElement('li');
           li.className = `memory-item ${isDue ? 'is-due' : ''}`;
@@ -2134,6 +2242,11 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
 
           const rPct = Math.round(hl.R * 100);
           const timeText = getDaysUntilDue(hl);
+          const overrideTag = state === 'pinned'
+            ? '<span class="mem-tag">pinned</span>'
+            : state === 'mastered'
+              ? '<span class="mem-tag">known</span>'
+              : '';
 
           li.innerHTML = `
             <div class="memory-snippet">"${escapeHtml(hl.text)}"</div>
@@ -2142,7 +2255,14 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
                 <span class="r-indicator" style="background: ${isDue ? 'var(--accent-review)' : 'var(--marker-dot)'}"></span>
                 R ${rPct}%
               </span>
+              ${overrideTag}
               <span>${timeText}</span>
+            </div>
+            <div class="memory-actions">
+              <button class="mem-act ${state === 'pinned' ? 'is-on' : ''}" data-act="pin" aria-label="Pin this highlight: stop it fading" title="Pin: stop it fading"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg></button>
+              <button class="mem-act ${state === 'mastered' ? 'is-on' : ''}" data-act="know" aria-label="Mark as already known" title="I already know this"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></button>
+              <button class="mem-act ${hl.override === 'again' ? 'is-on' : ''}" data-act="again" aria-label="Ask me again now" title="Ask me again now"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+              <button class="mem-act mem-del" data-act="del" aria-label="Delete this highlight" title="Delete highlight"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
             </div>
           `;
 
@@ -2163,8 +2283,75 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
             }
           });
 
+          const actionsEl = li.querySelector('.memory-actions');
+          if (actionsEl) {
+            actionsEl.addEventListener('click', (e) => {
+              const btn = e.target.closest('.mem-act');
+              if (!btn) return;
+              e.stopPropagation();
+              applyHighlightAction(hl, btn.getAttribute('data-act'));
+            });
+          }
+
           memoryList.appendChild(li);
         });
+      }
+
+      // --- Per-Highlight Overrides: pin / already known / ask again / delete ---
+      function applyHighlightAction(hl, act) {
+        const doc = getActiveDoc();
+        if (act === 'pin') {
+          hl.override = hl.override === 'pinned' ? null : 'pinned';
+          saveState();
+          renderHighlights();
+        } else if (act === 'know') {
+          hl.override = hl.override === 'mastered' ? null : 'mastered';
+          saveState();
+          renderHighlights();
+        } else if (act === 'again') {
+          hl.override = 'again';
+          saveState();
+          renderHighlights();
+        } else if (act === 'del') {
+          doc.highlights = doc.highlights.filter(h => h.id !== hl.id);
+          renderActiveDocument();
+          lastDeleted = { hl, doc };
+          showDeleteToast();
+        }
+      }
+
+      // --- Delete Undo: single pending slot, 5s window, in-memory only ---
+      function showDeleteToast() {
+        const existing = document.getElementById('deleteToast');
+        if (existing) existing.remove();
+        clearTimeout(deleteToastTimer);
+
+        const toast = document.createElement('div');
+        toast.id = 'deleteToast';
+        toast.className = 'delete-toast';
+        toast.setAttribute('role', 'status');
+        toast.setAttribute('aria-live', 'polite');
+        toast.innerHTML = '<span>Highlight deleted</span><button type="button" class="toast-undo" id="toastUndoBtn">Undo</button>';
+        document.body.appendChild(toast);
+        document.getElementById('toastUndoBtn').addEventListener('click', undoDelete);
+        void toast.offsetWidth; // force reflow so the transition runs
+        toast.classList.add('visible');
+
+        deleteToastTimer = setTimeout(() => {
+          toast.remove();
+          lastDeleted = null;
+        }, 5000);
+      }
+
+      function undoDelete() {
+        clearTimeout(deleteToastTimer);
+        const toast = document.getElementById('deleteToast');
+        if (toast) toast.remove();
+        if (lastDeleted) {
+          lastDeleted.doc.highlights.push(lastDeleted.hl);
+          lastDeleted = null;
+          renderActiveDocument();
+        }
       }
 
       function renderDecayProfile() {
@@ -2192,7 +2379,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         // State counts & bar
         let counts = { fresh: 0, softening: 0, review: 0, lapsed: 0 };
         doc.highlights.forEach(h => {
-          const st = getHighlightState(h.R);
+          const st = getHighlightState(h);
           counts[st] = (counts[st] || 0) + 1;
         });
 
@@ -2236,6 +2423,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         // Run across ALL documents so background documents decay realistically
         documents.forEach(doc => {
           doc.highlights.forEach(hl => {
+            if (hl.override === 'pinned' || hl.override === 'mastered') return;
             hl.lastReviewedHoursAgo += deltaHours;
             const tDays = hl.lastReviewedHoursAgo / 24;
             const factor = 0.19 * hl.decayFactor * 5;
@@ -2379,7 +2567,9 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
 
         // "Why am I seeing this" Transparency Line
         const daysAgo = (hl.lastReviewedHoursAgo / 24).toFixed(1);
-        recallTransparency.textContent = `Due: last recalled ${daysAgo}d ago · retrievability had dropped to ${Math.round(hl.R * 100)}%.`;
+        recallTransparency.textContent = hl.override === 'again'
+          ? 'You asked to be asked again about this now.'
+          : `Due: last recalled ${daysAgo}d ago · retrievability had dropped to ${Math.round(hl.R * 100)}%.`;
         recallTransparency.style.display = 'inline-block';
 
         // Adaptive Masked Context Box
@@ -2453,6 +2643,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         if (countdownTimer) clearInterval(countdownTimer);
 
         const hl = activeRecallHighlight;
+        if (hl && hl.override === 'again') delete hl.override;
         const targetEl = document.getElementById(`hl-${hl.id}`);
         const doc = getActiveDoc();
 
@@ -2531,11 +2722,14 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
 
       dueBadge.addEventListener('click', () => {
         const doc = getActiveDoc();
-        const firstDue = doc.highlights.find(h => h.R <= 0.85);
+        const firstDue = doc.highlights.find(h => {
+          const st = getHighlightState(h);
+          return st === 'review' || st === 'lapsed';
+        });
         if (firstDue) {
           const el = document.getElementById(`hl-${firstDue.id}`);
           if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          if (firstDue.R < 0.15) {
+          if (getHighlightState(firstDue) === 'lapsed') {
             openRereadMode(firstDue);
           } else {
             openRecallMode(firstDue);
@@ -2573,9 +2767,12 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
       });
 
       // --- SELECT-TO-HIGHLIGHT LOGIC ---
+      let selectionSettleTimer = null;
+
       function handleTextSelection() {
         const selection = window.getSelection();
         if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+          clearTimeout(selectionSettleTimer);
           floatingHighlightBtn.style.display = 'none';
           currentSelectionRange = null;
           return;
@@ -2608,9 +2805,23 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
           return;
         }
 
+        // Touch devices: the OS selection toolbar covers the floating button,
+        // so highlight straight from the selection once it settles.
+        const isTouch = window.matchMedia('(hover: none)').matches || window.innerWidth < 768;
+        if (isTouch) {
+          floatingHighlightBtn.style.display = 'none';
+          currentSelectionRange = null;
+          if (selectedText.split(/\s+/).length < 2) return; // ignore single-word taps
+          clearTimeout(selectionSettleTimer);
+          selectionSettleTimer = setTimeout(() => {
+            if (window.getSelection().toString().trim() !== selectedText) return;
+            createHighlightFromRange(range);
+          }, 250);
+          return;
+        }
+
         currentSelectionRange = range.cloneRange();
         const rect = range.getBoundingClientRect();
-        const containerRect = document.body.getBoundingClientRect();
 
         floatingHighlightBtn.style.left = `${rect.left + rect.width / 2 + window.scrollX}px`;
         floatingHighlightBtn.style.top = `${rect.top + window.scrollY - 8}px`;
@@ -2626,14 +2837,16 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
 
       floatingHighlightBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (!currentSelectionRange) return;
+        if (currentSelectionRange) createHighlightFromRange(currentSelectionRange);
+      });
 
-        const selectionText = currentSelectionRange.toString().trim();
+      function createHighlightFromRange(range) {
+        const selectionText = range.toString().trim();
         if (!selectionText) return;
 
-        const commonParent = currentSelectionRange.commonAncestorContainer.nodeType === 1
-          ? currentSelectionRange.commonAncestorContainer
-          : currentSelectionRange.commonAncestorContainer.parentNode;
+        const commonParent = range.commonAncestorContainer.nodeType === 1
+          ? range.commonAncestorContainer
+          : range.commonAncestorContainer.parentNode;
         const paraEl = commonParent.closest('p[data-para-id]');
         if (!paraEl) return;
 
@@ -2652,7 +2865,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         }
 
         const doc = getActiveDoc();
-        const newHl = {
+        doc.highlights.push({
           id: ++nextHlId,
           text: selectionText,
           paragraphId: paraId,
@@ -2663,9 +2876,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
           lastReviewedHoursAgo: 0,
           decayFactor: 0.22,
           claimedGot: false
-        };
-
-        doc.highlights.push(newHl);
+        });
 
         // Clear selection UI
         window.getSelection().removeAllRanges();
@@ -2674,7 +2885,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
 
         // Re-render
         renderActiveDocument();
-      });
+      }
 
       // --- AUTO-SUGGEST HIGHLIGHTS HEURISTICS ---
       function runAutoSuggestions() {
@@ -2866,7 +3077,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
               if (lastY !== null) {
                 const gap = lastY - line.y;
                 if (gap > (lastHeight * 1.55) && currentParaLines.length > 0) {
-                  reconstructedParagraphs.push(currentParaLines.join(' '));
+                  reconstructedParagraphs.push(joinLines(currentParaLines));
                   currentParaLines = [];
                 }
               }
@@ -2876,7 +3087,7 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
             });
 
             if (currentParaLines.length > 0) {
-              reconstructedParagraphs.push(currentParaLines.join(' '));
+              reconstructedParagraphs.push(joinLines(currentParaLines));
               currentParaLines = [];
               lastY = null;
             }
@@ -2933,16 +3144,63 @@ Due: last recalled 2.2d ago · retrievability had dropped to 62%.
         pasteModal.classList.remove('active');
       });
 
+      // --- SMART TEXT NORMALIZATION ---
+      // Rebuild paragraphs from pasted raw text: joins hard-wrapped lines,
+      // splits on sentence ends, keeps list items and markdown headings standalone.
+      function normalizeTextToParagraphs(raw) {
+        // Strip CRs (CRLF pastes -> clean LF) before paragraph logic
+        const text = raw.split(String.fromCharCode(13)).join('');
+        const SENTENCE_END = /[.!?:;]["'”’)\]]?$/;
+        const LIST_ITEM = /^([-*•]\s+|\d+[.)]\s+)/;
+        const HEADING = /^#{1,6}\s+/;
+        const paragraphs = [];
+        let buffer = '';
+
+        const flush = () => {
+          const t = buffer.replace(/\s+/g, ' ').trim();
+          if (t) paragraphs.push(t);
+          buffer = '';
+        };
+
+        text.split(/\n\s*\n+/).forEach(block => {
+          buffer = '';
+          const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+          lines.forEach((line, idx) => {
+            const isHeading = HEADING.test(line);
+            const isList = LIST_ITEM.test(line);
+            const clean = isHeading ? line.replace(HEADING, '') : line;
+            if (idx === 0) {
+              buffer = clean;
+              if (isHeading || isList) flush();
+            } else if (isHeading || isList || SENTENCE_END.test(buffer)) {
+              flush();
+              buffer = clean;
+              if (isHeading || isList) flush();
+            } else {
+              buffer += ' ' + clean;
+            }
+          });
+          flush();
+        });
+
+        return paragraphs;
+      }
+
+      // Join extracted lines into one paragraph, undoing hard-wrap hyphens
+      function joinLines(lines) {
+        return lines.reduce((acc, ln) => {
+          if (!acc) return ln;
+          return acc.endsWith('-') ? acc.slice(0, -1) + ln : acc + ' ' + ln;
+        }, '');
+      }
+
       submitPasteBtn.addEventListener('click', () => {
         const rawBody = pasteDocBody.value.trim();
         if (!rawBody) return;
 
         const title = pasteDocTitle.value.trim() || "Pasted Document";
-        // Split by double newlines into paragraphs
-        const rawParas = rawBody.split(/\n\s*\n+/);
-        const paras = rawParas
-          .map((p, i) => ({ id: i + 1, text: p.replace(/\s+/g, ' ').trim() }))
-          .filter(p => p.text.length > 0);
+        const paras = normalizeTextToParagraphs(rawBody)
+          .map((text, i) => ({ id: i + 1, text }));
 
         if (paras.length === 0) return;
 
